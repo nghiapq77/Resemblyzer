@@ -129,4 +129,5 @@ core
 
 
 # Project directories
-saved_models
+ckpt
+data

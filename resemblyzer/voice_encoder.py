@@ -1,17 +1,24 @@
-from resemblyzer.hparams import *
-from resemblyzer import audio
 from pathlib import Path
 from typing import Union, List
-from torch import nn
-from time import perf_counter as timer
 import numpy as np
 import torch
+from torch import nn
+from scipy.interpolate import interp1d
+from sklearn.metrics import roc_curve
+from torch.nn.utils import clip_grad_norm_
+from scipy.optimize import brentq
+from time import perf_counter as timer
+
+from resemblyzer.hparams import *
+from resemblyzer import audio
 
 
 class VoiceEncoder(nn.Module):
     def __init__(self,
                  device: Union[str, torch.device] = None,
-                 ckpt_path=None,
+                 loss_device='cpu',
+                 is_train=False,
+                 ckpt_path='ckpt/pretrained.pt',
                  verbose=True):
         """
         :param device: either a torch device or the name of a torch device (e.g. "cpu", "cuda"). 
@@ -20,14 +27,6 @@ class VoiceEncoder(nn.Module):
         """
         super().__init__()
 
-        # Define the network
-        self.lstm = nn.LSTM(mel_n_channels,
-                            model_hidden_size,
-                            model_num_layers,
-                            batch_first=True)
-        self.linear = nn.Linear(model_hidden_size, model_embedding_size)
-        self.relu = nn.ReLU()
-
         # Get the target device
         if device is None:
             device = torch.device(
@@ -35,25 +34,44 @@ class VoiceEncoder(nn.Module):
         elif isinstance(device, str):
             device = torch.device(device)
         self.device = device
+        self.loss_device = loss_device
 
-        # Load the pretrained model'speaker weights
-        if ckpt_path is None:
-            weights_fpath = Path(__file__).resolve().parent.joinpath(
-                "pretrained.pt")
-        else:
-            weights_fpath = Path(ckpt_path)
-        if not weights_fpath.exists():
-            raise Exception(
-                "Couldn't find the voice encoder pretrained model at %s." %
-                weights_fpath)
-        start = timer()
-        checkpoint = torch.load(weights_fpath, map_location="cpu")
-        self.load_state_dict(checkpoint["model_state"], strict=False)
-        self.to(device)
+        # Define the network
+        self.lstm = nn.LSTM(mel_n_channels,
+                            model_hidden_size,
+                            model_num_layers,
+                            batch_first=True).to(device)
+        self.linear = nn.Linear(model_hidden_size,
+                                model_embedding_size).to(device)
+        self.relu = nn.ReLU().to(device)
 
-        if verbose:
-            print("Loaded the voice encoder model on %s in %.2f seconds." %
-                  (device.type, timer() - start))
+        # Cosine similarity scaling (with fixed initial parameter values)
+        self.similarity_weight = nn.Parameter(torch.tensor([10.
+                                                            ])).to(loss_device)
+        self.similarity_bias = nn.Parameter(torch.tensor([-5.
+                                                          ])).to(loss_device)
+        # Loss
+        self.loss_fn = nn.CrossEntropyLoss().to(loss_device)
+
+        if not is_train:
+            # Load the pretrained model'speaker weights
+            if ckpt_path is None:
+                weights_fpath = Path(__file__).resolve().parent.joinpath(
+                    "pretrained.pt")
+            else:
+                weights_fpath = Path(ckpt_path)
+            if not weights_fpath.exists():
+                raise Exception(
+                    "Couldn't find the voice encoder pretrained model at %s." %
+                    weights_fpath)
+            start = timer()
+            checkpoint = torch.load(weights_fpath, map_location="cpu")
+            self.load_state_dict(checkpoint["model_state"], strict=False)
+            self.to(device)
+
+            if verbose:
+                print("Loaded the voice encoder model on %s in %.2f seconds." %
+                      (device.type, timer() - start))
 
     def forward(self, mels: torch.FloatTensor):
         """
@@ -188,3 +206,90 @@ class VoiceEncoder(nn.Module):
         raw_embed = np.mean([self.embed_utterance(wav, return_partials=False, **kwargs) \
                              for wav in wavs], axis=0)
         return raw_embed / np.linalg.norm(raw_embed, 2)
+
+    def do_gradient_ops(self):
+        # Gradient scale
+        self.similarity_weight.grad *= 0.01
+        self.similarity_bias.grad *= 0.01
+
+        # Gradient clipping
+        clip_grad_norm_(self.parameters(), 3, norm_type=2)
+
+    def similarity_matrix(self, embeds):
+        """
+        Computes the similarity matrix according the section 2.1 of GE2E.
+
+        :param embeds: the embeddings as a tensor of shape (speakers_per_batch, 
+        utterances_per_speaker, embedding_size)
+        :return: the similarity matrix as a tensor of shape (speakers_per_batch,
+        utterances_per_speaker, speakers_per_batch)
+        """
+        speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
+
+        # Inclusive centroids (1 per speaker). Cloning is needed for reverse differentiation
+        centroids_incl = torch.mean(embeds, dim=1, keepdim=True)
+        centroids_incl = centroids_incl.clone() / torch.norm(
+            centroids_incl, dim=2, keepdim=True)
+
+        # Exclusive centroids (1 per utterance)
+        centroids_excl = (torch.sum(embeds, dim=1, keepdim=True) - embeds)
+        centroids_excl /= (utterances_per_speaker - 1)
+        centroids_excl = centroids_excl.clone() / torch.norm(
+            centroids_excl, dim=2, keepdim=True)
+
+        # Similarity matrix. The cosine similarity of already 2-normed vectors is simply the dot
+        # product of these vectors (which is just an element-wise multiplication reduced by a sum).
+        # We vectorize the computation for efficiency.
+        sim_matrix = torch.zeros(speakers_per_batch, utterances_per_speaker,
+                                 speakers_per_batch).to(self.loss_device)
+        mask_matrix = 1 - np.eye(speakers_per_batch, dtype=np.int)
+        for j in range(speakers_per_batch):
+            mask = np.where(mask_matrix[j])[0]
+            sim_matrix[mask, :,
+                       j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
+            sim_matrix[j, :, j] = (embeds[j] * centroids_excl[j]).sum(dim=1)
+
+        ## Even more vectorized version (slower maybe because of transpose)
+        # sim_matrix2 = torch.zeros(speakers_per_batch, speakers_per_batch, utterances_per_speaker
+        #                           ).to(self.loss_device)
+        # eye = np.eye(speakers_per_batch, dtype=np.int)
+        # mask = np.where(1 - eye)
+        # sim_matrix2[mask] = (embeds[mask[0]] * centroids_incl[mask[1]]).sum(dim=2)
+        # mask = np.where(eye)
+        # sim_matrix2[mask] = (embeds * centroids_excl).sum(dim=2)
+        # sim_matrix2 = sim_matrix2.transpose(1, 2)
+
+        sim_matrix = sim_matrix * self.similarity_weight + self.similarity_bias
+        return sim_matrix
+
+    def loss(self, embeds):
+        """
+        Computes the softmax loss according the section 2.1 of GE2E.
+
+        :param embeds: the embeddings as a tensor of shape (speakers_per_batch, 
+        utterances_per_speaker, embedding_size)
+        :return: the loss and the EER for this batch of embeddings.
+        """
+        speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
+
+        # Loss
+        sim_matrix = self.similarity_matrix(embeds)
+        sim_matrix = sim_matrix.reshape(
+            (speakers_per_batch * utterances_per_speaker, speakers_per_batch))
+        ground_truth = np.repeat(np.arange(speakers_per_batch),
+                                 utterances_per_speaker)
+        target = torch.from_numpy(ground_truth).long().to(self.loss_device)
+        loss = self.loss_fn(sim_matrix, target)
+
+        # EER (not backpropagated)
+        with torch.no_grad():
+            inv_argmax = lambda i: np.eye(
+                1, speakers_per_batch, i, dtype=np.int)[0]
+            labels = np.array([inv_argmax(i) for i in ground_truth])
+            preds = sim_matrix.detach().cpu().numpy()
+
+            # Snippet from https://yangcha.github.io/EER-ROC/
+            fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())
+            eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+
+        return loss, eer

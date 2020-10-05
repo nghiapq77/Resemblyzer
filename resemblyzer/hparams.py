@@ -7,6 +7,8 @@ mel_n_channels = 40
 sampling_rate = 16000
 # Number of spectrogram frames in a partial utterance
 partials_n_frames = 160  # 1600 ms
+# Number of spectrogram frames at inference
+inference_n_frames = 80     #  800 ms
 
 ## Voice Activation Detection
 # Window size of the VAD. Must be either 10, 20 or 30 milliseconds.
@@ -25,3 +27,9 @@ audio_norm_target_dBFS = -30
 model_hidden_size = 256
 model_embedding_size = 256
 model_num_layers = 3
+
+## Training parameters
+learning_rate_init = 1e-4
+# learning_rate_init = 1e-5
+speakers_per_batch = 64
+utterances_per_speaker = 10
