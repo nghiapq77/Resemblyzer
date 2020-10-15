@@ -1,16 +1,17 @@
 from pathlib import Path
 from typing import Union, List
 import numpy as np
+from scipy.interpolate import interp1d
+from scipy.optimize import brentq
+from sklearn.metrics import roc_curve
+from time import perf_counter as timer
 import torch
 from torch import nn
-from scipy.interpolate import interp1d
-from sklearn.metrics import roc_curve
 from torch.nn.utils import clip_grad_norm_
-from scipy.optimize import brentq
-from time import perf_counter as timer
 
 from resemblyzer.hparams import *
 from resemblyzer import audio
+# from resemblyzer.transformer import TransformerEncoder
 
 
 class VoiceEncoder(nn.Module):
@@ -34,6 +35,9 @@ class VoiceEncoder(nn.Module):
         elif isinstance(device, str):
             device = torch.device(device)
         self.device = device
+
+        if isinstance(loss_device, str):
+            loss_device = torch.device(loss_device)
         self.loss_device = loss_device
 
         # Define the network
@@ -44,6 +48,8 @@ class VoiceEncoder(nn.Module):
         self.linear = nn.Linear(model_hidden_size,
                                 model_embedding_size).to(device)
         self.relu = nn.ReLU().to(device)
+
+        # self.transformer = TransformerEncoder(mel_n_channels, model_num_layers, trans_heads, model_hidden_size, partials_n_frames).to(device)
 
         # Cosine similarity scaling (with fixed initial parameter values)
         self.similarity_weight = nn.Parameter(torch.tensor([10.
@@ -84,8 +90,11 @@ class VoiceEncoder(nn.Module):
         """
         # Pass the input through the LSTM layers and retrieve the final hidden state of the last
         # layer. Apply a cutoff to 0 for negative values and L2 normalize the embeddings.
+
         _, (hidden, _) = self.lstm(mels)
         embeds_raw = self.relu(self.linear(hidden[-1]))
+
+        # embeds_raw = self.transformer(mels)
         return embeds_raw / torch.norm(embeds_raw, dim=1, keepdim=True)
 
     @staticmethod
@@ -184,11 +193,14 @@ class VoiceEncoder(nn.Module):
         mels = np.array([mel[s] for s in mel_slices])
         with torch.no_grad():
             mels = torch.from_numpy(mels).to(self.device)
-            partial_embeds = self(mels).cpu().numpy()
+            partial_embeds = self(mels)
+            # partial_embeds = self(mels).cpu().numpy()
 
         # Compute the utterance embedding from the partial embeddings
-        raw_embed = np.mean(partial_embeds, axis=0)
-        embed = raw_embed / np.linalg.norm(raw_embed, 2)
+        # raw_embed = np.mean(partial_embeds, axis=0)
+        # embed = raw_embed / np.linalg.norm(raw_embed, 2)
+        raw_embed = torch.mean(partial_embeds, dim=0)
+        embed = raw_embed / torch.norm(raw_embed, 2)
 
         if return_partials:
             return embed, partial_embeds, wav_slices
@@ -196,15 +208,14 @@ class VoiceEncoder(nn.Module):
 
     def embed_speaker(self, wavs: List[np.ndarray], **kwargs):
         """
-        Compute the embedding of a collection of wavs (presumably from the same speaker) by 
+        Compute the embedding of a collection of wavs (presumably from the same speaker) by
         averaging their embedding and L2-normalizing it.
-        
+
         :param wavs: list of wavs a numpy arrays of float32.
         :param kwargs: extra arguments to embed_utterance()
         :return: the embedding as a numpy array of float32 of shape (model_embedding_size,).
         """
-        raw_embed = np.mean([self.embed_utterance(wav, return_partials=False, **kwargs) \
-                             for wav in wavs], axis=0)
+        raw_embed = np.mean([self.embed_utterance(wav, return_partials=False, **kwargs) for wav in wavs], axis=0)
         return raw_embed / np.linalg.norm(raw_embed, 2)
 
     def do_gradient_ops(self):
@@ -289,7 +300,13 @@ class VoiceEncoder(nn.Module):
             preds = sim_matrix.detach().cpu().numpy()
 
             # Snippet from https://yangcha.github.io/EER-ROC/
-            fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())
-            eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+            try:
+                fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())
+                eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+            except ValueError:
+                print(preds.flatten())
+                print('preds contain nan:', np.isnan(np.sum(preds.flatten())))
+                print('embeds contain nan:', np.isnan(np.sum(embeds.detach().cpu().numpy().flatten())))
+                print('=============')
 
         return loss, eer

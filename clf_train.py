@@ -1,71 +1,33 @@
-import numpy as np
-import pickle
-from pathlib import Path
-from itertools import groupby
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn import datasets
+import argparse
+import os
+from resemblyzer.classifier import load_data, train_mul_svm, train_mlp
 
-from resemblyzer import preprocess_wav, VoiceEncoder
 
-### data
-# X = np.load('./embeds_from_pre.npy', allow_pickle=True)
-# y = np.load('./labels_from_pre.npy', allow_pickle=True)
-# print(len(X))
-encoder = VoiceEncoder(ckpt_path='ckpt/pretrained.pt')
-wav_fpaths = list(Path("/home/ubuntu/speaker-recognition/data/clv").glob("**/*.wav"))
-
-# Group the wavs per speaker and load them using the preprocessing function provided with
-# resemblyzer to load wavs in memory. It normalizes the volume, trims long silences and resamples
-# the wav to the correct sampling rate.
-speaker_wavs = {
-    speaker: list(map(preprocess_wav, wav_fpaths))
-    for speaker, wav_fpaths in groupby(
-        tqdm(wav_fpaths, "Preprocessing wavs", len(wav_fpaths), unit="wavs"),
-        lambda wav_fpath: wav_fpath.parent.stem)
-}
-X = []
-for wavs in speaker_wavs.values():
-    for wav in wavs:
-        X.append(encoder.embed_utterance(wav))
-X = np.array(X)
-y = list(map(lambda wav_fpath: wav_fpath.parent.stem, wav_fpaths))
-
-# Creating training and test split
-X_train, X_test, y_train, y_test = train_test_split(X,
-                                                    y,
-                                                    test_size=0.1,
-                                                    random_state=42,
-                                                    stratify=y)
-
-# Feature Scaling
-sc = StandardScaler()
-sc.fit(X_train)
-X_train_std = sc.transform(X_train)
-X_test_std = sc.transform(X_test)
-
-# Training a SVM classifier using SVC class
-svm = SVC(kernel='linear', random_state=1, C=0.1, probability=False)
-svm.fit(X_train_std, y_train)
-
-# rfc = RandomForestClassifier(random_state=42)
-# rfc.fit(X_train_std, y_train)
-
-# Model performance
-y_pred = svm.predict(X_train_std)
-# y_ = svm.decision_function(X_train_std)
-# y_prob = svm.predict_proba(X_train_std)
-# print(y_prob[0])
-print('Accuracy train: %.3f' % accuracy_score(y_train, y_pred))
-y_pred = svm.predict(X_test_std)
-print('Accuracy test: %.3f' % accuracy_score(y_test, y_pred))
-
-# Save to file in the current working directory
-pkl_filename = "ckpt/svm.pkl"
-with open(pkl_filename, 'wb') as f:
-    pickle.dump(svm, f)
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-t', '--type', default='mlp')
+    ap.add_argument('--device', default='cuda')
+    ap.add_argument('-d', '--data_path', default='exp/combine')
+    ap.add_argument('--batch_size', type=int, default=32)
+    ap.add_argument('--val_epoch', type=int, default=5)
+    ap.add_argument('--lr', type=float, default=0.001)
+    ap.add_argument('--val_split', type=float, default=0.2)
+    ap.add_argument('--epochs', type=int, default=200)
+    ap.add_argument('-n', '--num_class', type=int, default=381)
+    ap.add_argument('-e', '--embedding_ckpt', default='ckpt/pretrained.pt')
+    args = ap.parse_args()
+    if args.type == 'mlp':
+        train_mlp(args)
+    elif args.type == 'svm':
+        # train_SVM(from_path='exp/clv', ckpt_path='exp/clv/clv_trans.pt', data_path='data/librispeech_train-clean-100')
+        # train_SVM(ckpt_path='ckpt/pretrained.pt', data_path='../data/LibriSpeech/train-clean-100')
+        # train_SVM(ckpt_path='ckpt/pretrained.pt', data_path='../data/clv_new1', save_path='exp/combine')
+        train_mul_svm(from_path=args.data_path, scale=False)
+    elif args.type == 'prepare':
+        outn = args.data_path.split('/')[-1]
+        if outn == '':
+            outn = args.data_path.split('/')[-2]
+        save_path = os.path.join('exp', outn)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        load_data(ckpt_path=args.embedding_ckpt, data_path=args.data_path, save_path=save_path)

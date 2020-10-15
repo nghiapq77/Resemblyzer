@@ -217,4 +217,4 @@ def preprocess_clv(datasets_root: Path, out_dir: Path, skip_existing=False):
     speaker_dirs = list(dataset_root.glob("*"))
     # print(speaker_dirs)
     _preprocess_speaker_dirs(speaker_dirs, dataset_name, datasets_root,
-                             out_dir, "wav", skip_existing, logger)
+                             out_dir, "flac", skip_existing, logger)

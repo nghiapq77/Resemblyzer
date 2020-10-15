@@ -1,5 +1,6 @@
 from pathlib import Path
 import torch
+import numpy as np
 
 from resemblyzer import VoiceEncoder
 from resemblyzer.visualizations import Visualizations
@@ -85,6 +86,7 @@ def train(run_id: str, clean_data_root: Path, models_dir: Path,
         profiler.tick("Forward pass")
         embeds_loss = embeds.view(
             (speakers_per_batch, utterances_per_speaker, -1)).to(loss_device)
+
         loss, eer = model.loss(embeds_loss)
         sync(loss_device)
         profiler.tick("Loss")

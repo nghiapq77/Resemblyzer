@@ -10,15 +10,15 @@ if __name__ == "__main__":
         "Trains the speaker encoder. You must have run encoder_preprocess.py first.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument("--run_id", type=str, help= \
+    parser.add_argument("-id", "--run_id", type=str, help= \
         "Name for this model instance. If a model state from the same run ID was previously "
         "saved, the training will restart from there. Pass -f to overwrite saved states and "
         "restart from scratch.", default='clv')
-    parser.add_argument("--clean_data_root", type=Path, help= \
+    parser.add_argument("-d", "--clean_data_root", type=Path, help= \
         "Path to the output directory of encoder_preprocess.py. If you left the default "
         "output directory when preprocessing, it should be <datasets_root>/SV2TTS/encoder/.",
         default='data/clv')
-    parser.add_argument("-m", "--models_dir", type=Path, default="ckpt/clv", help=\
+    parser.add_argument("-m", "--models_dir", type=Path, default="exp/clv", help=\
         "Path to the output directory that will contain the saved model weights, as well as "
         "backups of those weights and plots generated during training.")
     parser.add_argument("-v", "--vis_every", type=int, default=10, help= \

@@ -6,6 +6,7 @@ import numpy as np
 import webrtcvad
 import librosa
 import struct
+from time import time
 
 int16_max = (2**15) - 1
 
@@ -31,7 +32,8 @@ def preprocess_wav(fpath_or_wav: Union[str, Path, np.ndarray],
 
     # Resample the wav
     if source_sr is not None:
-        wav = librosa.resample(wav, source_sr, sampling_rate)
+        # wav1 = librosa.resample(wav, source_sr, sampling_rate, res_type='kaiser_best')
+        wav = librosa.resample(wav, source_sr, sampling_rate, res_type='fft')
 
     # Apply the preprocessing: normalize volume and shorten long silences
     wav = normalize_volume(wav, audio_norm_target_dBFS, increase_only=True)

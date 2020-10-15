@@ -129,5 +129,7 @@ core
 
 
 # Project directories
+.flake8
 ckpt
 data
+exp

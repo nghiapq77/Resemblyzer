@@ -28,8 +28,12 @@ model_hidden_size = 256
 model_embedding_size = 256
 model_num_layers = 3
 
+trans_heads = 8
+# num_class = 18
+# num_class = 269
+
 ## Training parameters
 learning_rate_init = 1e-4
-# learning_rate_init = 1e-5
-speakers_per_batch = 64
+# speakers_per_batch = 64
+speakers_per_batch = 56
 utterances_per_speaker = 10

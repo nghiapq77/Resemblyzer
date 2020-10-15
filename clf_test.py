@@ -1,35 +1,70 @@
-import pickle
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+import os
+import torch
+from time import time
+from tqdm import tqdm
+import sys
+from resemblyzer import VoiceEncoder, preprocess_wav
+from resemblyzer.classifier import MLP
+
+device = torch.device('cuda')
+def normalize(x):
+    """
+    Normalize to 0-1
+    """
+    return (x - np.min(x)) / (np.max(x) - np.min(x))
 
 
-### Model loaded
-pkl_filename = 'ckpt/svm.pkl'
-with open(pkl_filename, 'rb') as file:
-    model = pickle.load(file)
+def load_models(exp_dir='exp/clv', num_class=381):
+    encoder = VoiceEncoder(device=device, loss_device=device, ckpt_path='ckpt/pretrained.pt')
+    classifier = MLP(projection_size=num_class)
+    classifier.load_state_dict(torch.load(os.path.join(exp_dir, 'mlp/mlp_best_val_loss.pkl')))
+    classifier.to(device)
+    classifier.eval()
+    return encoder, classifier
 
-### data
-X = np.load('./data/embeds/embeds_from_pre.npy', allow_pickle=True)
-y = np.load('./data/embeds/labels_from_pre.npy', allow_pickle=True)
-print(len(X))
 
-### Creating training and test split
-X_train, X_test, y_train, y_test = train_test_split(X,
-                                                    y,
-                                                    test_size=0.1,
-                                                    random_state=42,
-                                                    stratify=y)
+def predict_folder(data_path, num_class=381):
+    fmt = '.flac'
+    data_name = data_path.split('/')[-1]
+    exp_dir = os.path.join('exp', data_name)
+    class_path = os.path.join(exp_dir, 'classes.npy')
+    encoder, classifier = load_models(exp_dir, num_class=num_class)
+    classes = np.load(class_path)
+    correct = 0
+    count = 0
+    runtimes = []
+    try:
+        for (dirpath, dirnames, filenames) in tqdm(os.walk(data_path)):
+            for filename in filenames:
+                if filename.endswith(tuple(fmt)):
+                    filepath = dirpath + '/' + filename
+                    label = filepath.split('/')[-3]
 
-### Feature Scaling
-sc = StandardScaler()
-sc.fit(X_train)
-X_train_std = sc.transform(X_train)
-X_test_std = sc.transform(X_test)
+                    start = time()
+                    audio = preprocess_wav(filepath)
+                    # print(f'Preprocess time: {time() - start}')
+                    embed = encoder.embed_utterance(audio)
+                    inp = embed.unsqueeze(dim=0)
+                    out = classifier(inp)
+                    pred = out.max(dim=1)[1].cpu().numpy()
+                    runtimes.append(time() - start)
+                    # out = out.detach().cpu().numpy().squeeze()
+                    # print(pred, normalize(out)[pred])
+                    count += 1
+                    if classes[pred][0] == label:
+                        correct += 1
 
-### Model performance
-y_pred = model.predict(X_train_std)
-print('Accuracy train: %.3f' % accuracy_score(y_train, y_pred))
-y_pred = model.predict(X_test_std)
-print('Accuracy test: %.3f' % accuracy_score(y_test, y_pred))
+                    # if count == 2000:
+                        # print(f'Acc: {correct / count}')
+                        # print(f'Avg runtime: {np.mean(runtimes)}')
+                        # sys.exit(1)
+        print(f'Acc: {correct / count}')
+        print(f'Avg runtime: {np.mean(runtimes)}')
+    except KeyboardInterrupt:
+        print(f'Acc: {correct / count}')
+        print(f'Avg runtime: {np.mean(runtimes)}')
+
+
+if __name__ == '__main__':
+    predict_folder('../data/combine', num_class=381)
