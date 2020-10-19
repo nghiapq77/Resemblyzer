@@ -2,9 +2,9 @@ import numpy as np
 import pickle
 import os
 from pathlib import Path
+from datetime import datetime
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 from scipy.special import softmax
@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 
 from resemblyzer.hparams import model_embedding_size
-# from utils.profiler import Profiler
+
 
 def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
     if from_path is None:
@@ -24,37 +24,12 @@ def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
             raise Exception('No checkpoint path provided')
 
         from resemblyzer import preprocess_wav, VoiceEncoder
-        from itertools import groupby
         from tqdm import tqdm
 
         encoder = VoiceEncoder(ckpt_path=ckpt_path)
-        # if data_path is None:
-            # wav_fpaths = list(Path("/home/ubuntu/speaker-recognition/data/clv").glob("**/*.wav"))
-        # else:
-        # print(data_path)
         wav_fpaths = list(Path(data_path).glob("**/*.flac"))
-        # print(wav_fpaths)
-        # wav_fpaths = wav_fpaths[:5000]
 
-        # # Group the wavs per speaker and load them using the preprocessing function provided with
-        # # resemblyzer to load wavs in memory. It normalizes the volume, trims long silences and resamples
-        # # the wav to the correct sampling rate.
-        # speaker_wavs = {
-            # speaker: list(map(preprocess_wav, wav_fpaths))
-            # for speaker, wav_fpaths in groupby(
-                # tqdm(wav_fpaths,
-                     # "Preprocessing wavs",
-                     # len(wav_fpaths),
-                     # unit="wavs"), lambda wav_fpath: wav_fpath.parent.stem)
-        # }
-        # X = []
-        # for wavs in speaker_wavs.values():
-            # for wav in wavs:
-                # X.append(encoder.embed_utterance(wav))
-        # X = np.array(X)
-        # y = list(map(lambda wav_fpath: wav_fpath.parent.stem, wav_fpaths))
-
-        # No need to store a dict, help with memory problem
+        # Preprocess and save encoded utterance and label to list
         X = []
         y = []
         for wav_fpath in tqdm(wav_fpaths):
@@ -101,6 +76,27 @@ def scale_data(X_train, X_test=None, method='standard'):
     return X_train_std, X_test_std
 
 
+class Logger:
+    """
+    Logger for classifier
+    """
+    def __init__(self, root):
+        self.text_file = open(Path(root, "log.txt"), "w")
+
+        start_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
+        self.write_line(f"Creating log on {start_time}")
+        self.write_line("=".center(100, '='))
+
+    def write_line(self, line):
+        self.text_file.write("%s\n" % line)
+
+    def finalize(self):
+        self.write_line("=".center(100, '='))
+        end_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
+        self.write_line(f"Finished on {end_time}")
+        self.text_file.close()
+
+
 class SVM():
     def __init__(self, kernel='linear', C=0.1, degree=3):
         self.model = SVC(kernel=kernel, random_state=1, C=C, degree=degree, probability=False)
@@ -116,7 +112,7 @@ def train_svm(from_path=None, ckpt_path=None, data_path=None, save_path=None):
     X_train, X_test, y_train, y_test = split_data(X, y)
 
     # Feature Scaling
-    X_train_std, X_test_std = scale_data(X_train, X_test) 
+    X_train_std, X_test_std = scale_data(X_train, X_test)
     # Training a SVM classifier using SVC class
     svm.model.fit(X_train, y_train)
 
@@ -163,20 +159,8 @@ class EmbedDataset(Dataset):
         embeds, labels = load_data(from_path)
         # embeds, _ = scale_data(embeds)
         le = LabelEncoder()
-
         self.embeds = torch.from_numpy(embeds)
         self.labels = le.fit_transform(labels)
-
-        # X_train, X_test, y_train, y_test = split_data(embeds, labels, test_size=test_ratio)
-        # if is_train:
-            # self.embeds = torch.from_numpy(X_train)
-            # self.labels = le.fit_transform(y_train)
-            # # print('train', len(self.labels), self.labels[:10], y_train[:10])
-        # else:
-            # self.embeds = torch.from_numpy(X_test)
-            # self.labels = le.fit_transform(y_test)
-            # # print('val', len(self.labels), self.labels[:10], y_test[:10])
-        # # print('222222222')
 
         # Save classes
         np.save(os.path.join(from_path, 'classes.npy'), le.classes_)
@@ -215,31 +199,30 @@ class ConvNet(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, dim=256, projection_size=269, hidden_size=256):
+    def __init__(self, inp_dim=256, num_class=269, hidden_size=256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(dim, hidden_size),
+            nn.Linear(inp_dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, projection_size)
+            nn.Linear(hidden_size, num_class)
         )
 
     def forward(self, x):
         return self.net(x)
 
 
-def sync(device):
-    # For correct profiling (cuda operations are async)
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-
-
 def train_mlp(args):
+    # Specify device
     device = torch.device(args.device)
+
     # Model saved path
     save_path = os.path.join(args.data_path, 'mlp')
     if not os.path.exists(save_path):
         os.mkdir(save_path)
+
+    # Logger
+    logger = Logger(save_path)
 
     # Create a dataset and a dataloader
     dataset = EmbedDataset(from_path=args.data_path)
@@ -254,16 +237,11 @@ def train_mlp(args):
     train_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=8, pin_memory=True)
     val_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=val_sampler, num_workers=8, pin_memory=True)
 
-    # train_data = EmbedDataset(from_path=args.data_path, is_train=True)
-    # val_data = EmbedDataset(from_path=args.data_path, is_train=False)
-    # train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    # val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True)
-
     # Create the model and the optimizer
-    model = MLP(dim=model_embedding_size, projection_size=args.num_class).to(device)
+    model = MLP(inp_dim=model_embedding_size, num_class=args.num_class).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
     best_val_loss = 9999
     epoch_best_val_loss = 0
@@ -284,22 +262,19 @@ def train_mlp(args):
 
             # Forward pass
             outputs = model(inputs)
-            # loss = criterion(outputs.squeeze(dim=1), labels)
             loss = criterion(outputs, labels)
 
             # Calculate loss and accuracy
             tot_loss.append(loss.detach().cpu().numpy())
-            # preds = outputs.max(dim=2)[1].squeeze(dim=1)
             preds = outputs.max(dim=1)[1]
             correct += preds.eq(labels).cpu().numpy().sum()
-            # print(preds.shape, labels.shape)
-            # print('========')
 
             # Backward pass
             loss.backward()
             optimizer.step()
         scheduler.step()
         print(f'Epoch {epoch}, TrainLoss: {np.mean(tot_loss)}, Acc: {correct / len(train_indices)}')
+        logger.write_line(f'Epoch {epoch}, TrainLoss: {np.mean(tot_loss)}, Acc: {correct / len(train_indices)}')
 
         if epoch % args.val_epoch == 0:
             model.eval()
@@ -322,18 +297,22 @@ def train_mlp(args):
             val_loss = np.mean(val_losses)
             val_acc = correct / len(val_indices)
             print(f'Epoch {epoch}, ValLoss: {val_loss}, Acc: {val_acc}')
+            logger.write_line(f'Epoch {epoch}, ValLoss: {val_loss}, Acc: {val_acc}')
 
             # Saving
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 epoch_best_val_loss = epoch
-                torch.save(model.state_dict(), os.path.join(save_path, 'mlp_best_val_loss.pkl'))
+                torch.save(model.state_dict(), os.path.join(save_path, 'mlp_best_val_loss.pt'))
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 epoch_best_val_acc = epoch
-                torch.save(model.state_dict(), os.path.join(save_path, 'mlp_best_val_acc.pkl'))
+                torch.save(model.state_dict(), os.path.join(save_path, 'mlp_best_val_acc.pt'))
     print(f'Best val loss {best_val_loss} at epoch {epoch_best_val_loss}')
+    logger.write_line(f'Best val loss {best_val_loss} at epoch {epoch_best_val_loss}')
     print(f'Best val acc {best_val_acc} at epoch {epoch_best_val_acc}')
+    logger.write_line(f'Best val acc {best_val_acc} at epoch {epoch_best_val_acc}')
+    logger.finalize()
 
 
 if __name__ == '__main__':
