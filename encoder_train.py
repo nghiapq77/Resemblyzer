@@ -1,7 +1,7 @@
 from pathlib import Path
 import argparse
 
-from resemblyzer.train import train
+from resemblyzer.voice_encoder import train
 from utils.argutils import print_args
 
 if __name__ == "__main__":

@@ -4,26 +4,31 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import brentq
 from sklearn.metrics import roc_curve
-from time import perf_counter as timer
+# from time import perf_counter as timer
 import torch
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 
-from resemblyzer.hparams import *
+from resemblyzer.hparams import (
+    sampling_rate, partials_n_frames,
+    mel_n_channels, mel_window_step,
+    model_hidden_size, model_embedding_size, model_num_layers,
+    learning_rate_init, speakers_per_batch, utterances_per_speaker
+)
 from resemblyzer import audio
+from resemblyzer.visualizations import Visualizations
+from resemblyzer.data_objects import SpeakerVerificationDataLoader, SpeakerVerificationDataset
+from utils.profiler import Profiler
 # from resemblyzer.transformer import TransformerEncoder
 
 
 class VoiceEncoder(nn.Module):
     def __init__(self,
                  device: Union[str, torch.device] = None,
-                 loss_device='cpu',
-                 is_train=False,
-                 ckpt_path='ckpt/pretrained.pt',
-                 verbose=True):
+                 loss_device='cpu'):
         """
-        :param device: either a torch device or the name of a torch device (e.g. "cpu", "cuda"). 
-        If None, defaults to cuda if it is available on your machine, otherwise the model will 
+        :param device: either a torch device or the name of a torch device (e.g. "cpu", "cuda").
+        If None, defaults to cuda if it is available on your machine, otherwise the model will
         run on cpu. Outputs are always returned on the cpu, as numpy arrays.
         """
         super().__init__()
@@ -59,33 +64,13 @@ class VoiceEncoder(nn.Module):
         # Loss
         self.loss_fn = nn.CrossEntropyLoss().to(loss_device)
 
-        if not is_train:
-            # Load the pretrained model'speaker weights
-            if ckpt_path is None:
-                weights_fpath = Path(__file__).resolve().parent.joinpath(
-                    "pretrained.pt")
-            else:
-                weights_fpath = Path(ckpt_path)
-            if not weights_fpath.exists():
-                raise Exception(
-                    "Couldn't find the voice encoder pretrained model at %s." %
-                    weights_fpath)
-            start = timer()
-            checkpoint = torch.load(weights_fpath, map_location="cpu")
-            self.load_state_dict(checkpoint["model_state"], strict=False)
-            self.to(device)
-
-            if verbose:
-                print("Loaded the voice encoder model on %s in %.2f seconds." %
-                      (device.type, timer() - start))
-
     def forward(self, mels: torch.FloatTensor):
         """
         Computes the embeddings of a batch of utterance spectrograms.
 
-        :param mels: a batch of mel spectrograms of same duration as a float32 tensor of shape 
-        (batch_size, n_frames, n_channels) 
-        :return: the embeddings as a float 32 tensor of shape (batch_size, embedding_size). 
+        :param mels: a batch of mel spectrograms of same duration as a float32 tensor of shape
+        (batch_size, n_frames, n_channels)
+        :return: the embeddings as a float 32 tensor of shape (batch_size, embedding_size).
         Embeddings are positive and L2-normed, thus they lay in the range [0, 1].
         """
         # Pass the input through the LSTM layers and retrieve the final hidden state of the last
@@ -93,33 +78,31 @@ class VoiceEncoder(nn.Module):
 
         _, (hidden, _) = self.lstm(mels)
         embeds_raw = self.relu(self.linear(hidden[-1]))
-
-        # embeds_raw = self.transformer(mels)
         return embeds_raw / torch.norm(embeds_raw, dim=1, keepdim=True)
 
     @staticmethod
     def compute_partial_slices(n_samples: int, rate, min_coverage):
         """
-        Computes where to split an utterance waveform and its corresponding mel spectrogram to 
-        obtain partial utterances of <partials_n_frames> each. Both the waveform and the 
-        mel spectrogram slices are returned, so as to make each partial utterance waveform 
+        Computes where to split an utterance waveform and its corresponding mel spectrogram to
+        obtain partial utterances of <partials_n_frames> each. Both the waveform and the
+        mel spectrogram slices are returned, so as to make each partial utterance waveform
         correspond to its spectrogram.
-    
-        The returned ranges may be indexing further than the length of the waveform. It is 
+
+        The returned ranges may be indexing further than the length of the waveform. It is
         recommended that you pad the waveform with zeros up to wav_slices[-1].stop.
-    
+
         :param n_samples: the number of samples in the waveform
-        :param rate: how many partial utterances should occur per second. Partial utterances must 
-        cover the span of the entire utterance, thus the rate should not be lower than the inverse 
-        of the duration of a partial utterance. By default, partial utterances are 1.6s long and 
+        :param rate: how many partial utterances should occur per second. Partial utterances must
+        cover the span of the entire utterance, thus the rate should not be lower than the inverse
+        of the duration of a partial utterance. By default, partial utterances are 1.6s long and
         the minimum rate is thus 0.625.
-        :param min_coverage: when reaching the last partial utterance, it may or may not have 
-        enough frames. If at least <min_pad_coverage> of <partials_n_frames> are present, 
-        then the last partial utterance will be considered by zero-padding the audio. Otherwise, 
-        it will be discarded. If there aren't enough frames for one partial utterance, 
+        :param min_coverage: when reaching the last partial utterance, it may or may not have
+        enough frames. If at least <min_pad_coverage> of <partials_n_frames> are present,
+        then the last partial utterance will be considered by zero-padding the audio. Otherwise,
+        it will be discarded. If there aren't enough frames for one partial utterance,
         this parameter is ignored so that the function always returns at least one slice.
-        :return: the waveform slices and mel spectrogram slices as lists of array slices. Index 
-        respectively the waveform and the mel spectrogram with these slices to obtain the partial 
+        :return: the waveform slices and mel spectrogram slices as lists of array slices. Index
+        respectively the waveform and the mel spectrogram with these slices to obtain the partial
         utterances.
         """
         assert 0 < min_coverage <= 1
@@ -157,27 +140,27 @@ class VoiceEncoder(nn.Module):
                         rate=1.3,
                         min_coverage=0.75):
         """
-        Computes an embedding for a single utterance. The utterance is divided in partial 
-        utterances and an embedding is computed for each. The complete utterance embedding is the 
+        Computes an embedding for a single utterance. The utterance is divided in partial
+        utterances and an embedding is computed for each. The complete utterance embedding is the
         L2-normed average embedding of the partial utterances.
-        
+
         TODO: independent batched version of this function
-    
+
         :param wav: a preprocessed utterance waveform as a numpy array of float32
-        :param return_partials: if True, the partial embeddings will also be returned along with 
+        :param return_partials: if True, the partial embeddings will also be returned along with
         the wav slices corresponding to each partial utterance.
-        :param rate: how many partial utterances should occur per second. Partial utterances must 
-        cover the span of the entire utterance, thus the rate should not be lower than the inverse 
-        of the duration of a partial utterance. By default, partial utterances are 1.6s long and 
+        :param rate: how many partial utterances should occur per second. Partial utterances must
+        cover the span of the entire utterance, thus the rate should not be lower than the inverse
+        of the duration of a partial utterance. By default, partial utterances are 1.6s long and
         the minimum rate is thus 0.625.
-        :param min_coverage: when reaching the last partial utterance, it may or may not have 
-        enough frames. If at least <min_pad_coverage> of <partials_n_frames> are present, 
-        then the last partial utterance will be considered by zero-padding the audio. Otherwise, 
-        it will be discarded. If there aren't enough frames for one partial utterance, 
+        :param min_coverage: when reaching the last partial utterance, it may or may not have
+        enough frames. If at least <min_pad_coverage> of <partials_n_frames> are present,
+        then the last partial utterance will be considered by zero-padding the audio. Otherwise,
+        it will be discarded. If there aren't enough frames for one partial utterance,
         this parameter is ignored so that the function always returns at least one slice.
-        :return: the embedding as a numpy array of float32 of shape (model_embedding_size,). If 
-        <return_partials> is True, the partial utterances as a numpy array of float32 of shape 
-        (n_partials, model_embedding_size) and the wav partials as a list of slices will also be 
+        :return: the embedding as a numpy array of float32 of shape (model_embedding_size,). If
+        <return_partials> is True, the partial utterances as a numpy array of float32 of shape
+        (n_partials, model_embedding_size) and the wav partials as a list of slices will also be
         returned.
         """
         # Compute where to split the utterance into partials and pad the waveform with zeros if
@@ -194,11 +177,8 @@ class VoiceEncoder(nn.Module):
         with torch.no_grad():
             mels = torch.from_numpy(mels).to(self.device)
             partial_embeds = self(mels)
-            # partial_embeds = self(mels).cpu().numpy()
 
         # Compute the utterance embedding from the partial embeddings
-        # raw_embed = np.mean(partial_embeds, axis=0)
-        # embed = raw_embed / np.linalg.norm(raw_embed, 2)
         raw_embed = torch.mean(partial_embeds, dim=0)
         embed = raw_embed / torch.norm(raw_embed, 2)
 
@@ -215,7 +195,9 @@ class VoiceEncoder(nn.Module):
         :param kwargs: extra arguments to embed_utterance()
         :return: the embedding as a numpy array of float32 of shape (model_embedding_size,).
         """
-        raw_embed = np.mean([self.embed_utterance(wav, return_partials=False, **kwargs) for wav in wavs], axis=0)
+        raw_embed = np.mean([
+            self.embed_utterance(wav, return_partials=False, **kwargs) for wav in wavs
+        ], axis=0)
         return raw_embed / np.linalg.norm(raw_embed, 2)
 
     def do_gradient_ops(self):
@@ -230,7 +212,7 @@ class VoiceEncoder(nn.Module):
         """
         Computes the similarity matrix according the section 2.1 of GE2E.
 
-        :param embeds: the embeddings as a tensor of shape (speakers_per_batch, 
+        :param embeds: the embeddings as a tensor of shape (speakers_per_batch,
         utterances_per_speaker, embedding_size)
         :return: the similarity matrix as a tensor of shape (speakers_per_batch,
         utterances_per_speaker, speakers_per_batch)
@@ -277,8 +259,7 @@ class VoiceEncoder(nn.Module):
         """
         Computes the softmax loss according the section 2.1 of GE2E.
 
-        :param embeds: the embeddings as a tensor of shape (speakers_per_batch, 
-        utterances_per_speaker, embedding_size)
+        :param embeds: the embeddings as a tensor of shape (speakers_per_batch, utterances_per_speaker, embedding_size)
         :return: the loss and the EER for this batch of embeddings.
         """
         speakers_per_batch, utterances_per_speaker = embeds.shape[:2]
@@ -301,12 +282,145 @@ class VoiceEncoder(nn.Module):
 
             # Snippet from https://yangcha.github.io/EER-ROC/
             try:
-                fpr, tpr, thresholds = roc_curve(labels.flatten(), preds.flatten())
+                fpr, tpr, thresholds = roc_curve(labels.flatten(),
+                                                 preds.flatten())
                 eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
             except ValueError:
                 print(preds.flatten())
                 print('preds contain nan:', np.isnan(np.sum(preds.flatten())))
-                print('embeds contain nan:', np.isnan(np.sum(embeds.detach().cpu().numpy().flatten())))
+                print(
+                    'embeds contain nan:',
+                    np.isnan(np.sum(embeds.detach().cpu().numpy().flatten())))
                 print('=============')
 
         return loss, eer
+
+
+def train(run_id: str, clean_data_root: Path, models_dir: Path,
+          umap_every: int, save_every: int, backup_every: int, vis_every: int,
+          force_restart: bool, visdom_server: str, no_visdom: bool):
+    def sync(device: torch.device):
+        # For correct profiling (cuda operations are async)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+    # Create a dataset and a dataloader
+    dataset = SpeakerVerificationDataset(clean_data_root)
+    loader = SpeakerVerificationDataLoader(
+        dataset,
+        speakers_per_batch,
+        utterances_per_speaker,
+        num_workers=8,
+    )
+
+    # Setup the device on which to run the forward pass and the loss. These can be different,
+    # because the forward pass is faster on the GPU whereas the loss is often (depending on your
+    # hyperparameters) faster on the CPU.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # FIXME: currently, the gradient is None if loss_device is cuda
+    loss_device = torch.device("cpu")
+
+    # Create the model and the optimizer
+    model = VoiceEncoder(device, loss_device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate_init)
+    init_step = 1
+
+    # Configure file path for the model
+    state_fpath = models_dir.joinpath(run_id + ".pt")
+    backup_dir = models_dir.joinpath(run_id + "_backups")
+
+    # Load any existing model
+    if not force_restart:
+        if state_fpath.exists():
+            print(
+                "Found existing model \"%s\", loading it and resuming training."
+                % run_id)
+            checkpoint = torch.load(state_fpath)
+            init_step = checkpoint["step"]
+            model.load_state_dict(checkpoint["model_state"])
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            optimizer.param_groups[0]["lr"] = learning_rate_init
+        else:
+            print("No model \"%s\" found, starting training from scratch." %
+                  run_id)
+    else:
+        print("Starting the training from scratch.")
+    model.train()
+
+    # Initialize the visualization environment
+    vis = Visualizations(run_id,
+                         vis_every,
+                         server=visdom_server,
+                         disabled=no_visdom)
+    vis.log_dataset(dataset)
+    vis.log_params()
+    device_name = str(
+        torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+    vis.log_implementation({"Device": device_name})
+
+    # Training loop
+    profiler = Profiler(summarize_every=10, disabled=False)
+    for step, speaker_batch in enumerate(loader, init_step):
+        profiler.tick("Blocking, waiting for batch (threaded)")
+
+        # Forward pass
+        inputs = torch.from_numpy(speaker_batch.data).to(device)
+        sync(device)
+        profiler.tick("Data to %s" % device)
+        embeds = model(inputs)
+        sync(device)
+        profiler.tick("Forward pass")
+        embeds_loss = embeds.view(
+            (speakers_per_batch, utterances_per_speaker, -1)).to(loss_device)
+
+        loss, eer = model.loss(embeds_loss)
+        sync(loss_device)
+        profiler.tick("Loss")
+
+        # Backward pass
+        model.zero_grad()
+        loss.backward()
+        profiler.tick("Backward pass")
+        model.do_gradient_ops()
+        optimizer.step()
+        profiler.tick("Parameter update")
+
+        # Update visualizations
+        # learning_rate = optimizer.param_groups[0]["lr"]
+        vis.update(loss.item(), eer, step)
+
+        # Draw projections and save them to the backup folder
+        if umap_every != 0 and step % umap_every == 0:
+            print("Drawing and saving projections (step %d)" % step)
+            backup_dir.mkdir(exist_ok=True)
+            projection_fpath = backup_dir.joinpath("%s_umap_%06d.png" %
+                                                   (run_id, step))
+            embeds = embeds.detach().cpu().numpy()
+            vis.draw_projections(embeds, utterances_per_speaker, step,
+                                 projection_fpath)
+            vis.save()
+
+        # Overwrite the latest version of the model
+        if save_every != 0 and step % save_every == 0:
+            print("Saving the model (step %d)" % step)
+            torch.save(
+                {
+                    "step": step + 1,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                }, state_fpath)
+
+        # Make a backup
+        if backup_every != 0 and step % backup_every == 0:
+            print("Making a backup (step %d)" % step)
+            backup_dir.mkdir(exist_ok=True)
+            backup_fpath = backup_dir.joinpath("%s_bak_%06d.pt" %
+                                               (run_id, step))
+            torch.save(
+                {
+                    "step": step + 1,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                }, backup_fpath)
+
+        profiler.tick("Extras (visualizations, saving)")

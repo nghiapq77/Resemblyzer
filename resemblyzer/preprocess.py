@@ -5,7 +5,7 @@ from tqdm import tqdm
 import numpy as np
 
 from resemblyzer import audio
-from resemblyzer.hparams import *
+from resemblyzer.hparams import sampling_rate, partials_n_frames
 from resemblyzer.config import librispeech_datasets, anglophone_nationalites
 
 
