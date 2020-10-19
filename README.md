@@ -2,6 +2,19 @@ Resemblyzer allows you to derive a **high-level representation of a voice** thro
 
 N.B.: this repo holds 100mb of audio data for demonstration purpose. To get [the package](https://pypi.org/project/Resemblyzer/) alone, run `pip install resemblyzer` (python 3.5+ is required).
 
+## Training and Testing
+**Encoder**:
+```bash
+python encoder_preprocess.py -d clv --datasets_root ../data/ -o data/clv
+python encoder_train.py -id clv -d data/clv -m exp/clv
+```
+**Classifier**:
+```bash
+python clf_train.py -t prepare -d ../data/clv
+python clf_train.py -d exp/clv
+python clf_test.py -d ../data/clv
+```
+
 ## Demos
 **Speaker diarization**: [\[Demo 02\]](https://github.com/resemble-ai/Resemblyzer/blob/master/demo02_diarization.py) recognize who is talking when with only a few seconds of reference audio per speaker:  
 *(click the image for a video)*
