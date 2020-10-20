@@ -80,6 +80,13 @@ class VoiceEncoder(nn.Module):
         embeds_raw = self.relu(self.linear(hidden[-1]))
         return embeds_raw / torch.norm(embeds_raw, dim=1, keepdim=True)
 
+    def load_ckpt(self,
+                  ckpt_path='ckpt/pretrained.pt',
+                  device=torch.device('cuda')):
+        encoder_ckpt = torch.load(ckpt_path, map_location="cpu")
+        self.load_state_dict(encoder_ckpt["model_state"], strict=False)
+        self.to(device)
+
     @staticmethod
     def compute_partial_slices(n_samples: int, rate, min_coverage):
         """
@@ -126,8 +133,7 @@ class VoiceEncoder(nn.Module):
 
         # Evaluate whether extra padding is warranted or not
         last_wav_range = wav_slices[-1]
-        coverage = (n_samples - last_wav_range.start) / (last_wav_range.stop -
-                                                         last_wav_range.start)
+        coverage = (n_samples - last_wav_range.start) / (last_wav_range.stop - last_wav_range.start)
         if coverage < min_coverage and len(mel_slices) > 1:
             mel_slices = mel_slices[:-1]
             wav_slices = wav_slices[:-1]
@@ -195,9 +201,7 @@ class VoiceEncoder(nn.Module):
         :param kwargs: extra arguments to embed_utterance()
         :return: the embedding as a numpy array of float32 of shape (model_embedding_size,).
         """
-        raw_embed = np.mean([
-            self.embed_utterance(wav, return_partials=False, **kwargs) for wav in wavs
-        ], axis=0)
+        raw_embed = np.mean([self.embed_utterance(wav, return_partials=False, **kwargs) for wav in wavs], axis=0)
         return raw_embed / np.linalg.norm(raw_embed, 2)
 
     def do_gradient_ops(self):
@@ -221,14 +225,12 @@ class VoiceEncoder(nn.Module):
 
         # Inclusive centroids (1 per speaker). Cloning is needed for reverse differentiation
         centroids_incl = torch.mean(embeds, dim=1, keepdim=True)
-        centroids_incl = centroids_incl.clone() / torch.norm(
-            centroids_incl, dim=2, keepdim=True)
+        centroids_incl = centroids_incl.clone() / torch.norm(centroids_incl, dim=2, keepdim=True)
 
         # Exclusive centroids (1 per utterance)
         centroids_excl = (torch.sum(embeds, dim=1, keepdim=True) - embeds)
         centroids_excl /= (utterances_per_speaker - 1)
-        centroids_excl = centroids_excl.clone() / torch.norm(
-            centroids_excl, dim=2, keepdim=True)
+        centroids_excl = centroids_excl.clone() / torch.norm(centroids_excl, dim=2, keepdim=True)
 
         # Similarity matrix. The cosine similarity of already 2-normed vectors is simply the dot
         # product of these vectors (which is just an element-wise multiplication reduced by a sum).
@@ -238,8 +240,7 @@ class VoiceEncoder(nn.Module):
         mask_matrix = 1 - np.eye(speakers_per_batch, dtype=np.int)
         for j in range(speakers_per_batch):
             mask = np.where(mask_matrix[j])[0]
-            sim_matrix[mask, :,
-                       j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
+            sim_matrix[mask, :, j] = (embeds[mask] * centroids_incl[j]).sum(dim=2)
             sim_matrix[j, :, j] = (embeds[j] * centroids_excl[j]).sum(dim=1)
 
         ## Even more vectorized version (slower maybe because of transpose)

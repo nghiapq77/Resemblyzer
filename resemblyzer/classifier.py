@@ -26,7 +26,10 @@ def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
         from resemblyzer import preprocess_wav, VoiceEncoder
         from tqdm import tqdm
 
-        encoder = VoiceEncoder(ckpt_path=ckpt_path)
+        device = torch.device('cuda')
+        encoder = VoiceEncoder(device=device, loss_device=device)
+        encoder.load_ckpt(ckpt_path, device=device)
+        encoder.eval()
         wav_fpaths = list(Path(data_path).glob("**/*.flac"))
 
         # Preprocess and save encoded utterance and label to list
@@ -34,7 +37,7 @@ def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
         y = []
         for wav_fpath in tqdm(wav_fpaths):
             wav = preprocess_wav(wav_fpath)
-            X.append(encoder.embed_utterance(wav))
+            X.append(encoder.embed_utterance(wav).cpu().numpy())
             y.append(wav_fpath.parent.parent.stem)
 
         # Save for testing
@@ -51,7 +54,8 @@ def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
 
 def split_data(X, y, test_size=0.2):
     # Creating training and test split
-    X_train, X_test, y_train, y_test = train_test_split(X, y,
+    X_train, X_test, y_train, y_test = train_test_split(X,
+                                                        y,
                                                         test_size=test_size,
                                                         random_state=42,
                                                         stratify=y)
@@ -159,7 +163,8 @@ class EmbedDataset(Dataset):
         embeds, labels = load_data(from_path)
         # embeds, _ = scale_data(embeds)
         le = LabelEncoder()
-        self.embeds = torch.from_numpy(embeds)
+        # self.embeds = torch.from_numpy(embeds)
+        self.embeds = embeds
         self.labels = le.fit_transform(labels)
 
         # Save classes
@@ -211,6 +216,18 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+    def load_ckpt(self,
+                  ckpt_path='exp/clv/mlp/mlp_best_val_loss.pt',
+                  device=torch.device('cuda')):
+        self.load_state_dict(torch.load(ckpt_path))
+        self.to(device)
+
+    def predict(self, inp, topk=2):
+        out = self.net(inp)
+        prob = F.softmax(out, dim=1)
+        top_probs, top_classes = prob.topk(topk, dim=1)
+        return top_probs.detach().cpu().numpy()[0], top_classes.cpu().numpy()[0]
+
 
 def train_mlp(args):
     # Specify device
@@ -241,7 +258,7 @@ def train_mlp(args):
     model = MLP(inp_dim=model_embedding_size, num_class=args.num_class).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=0.1)
 
     best_val_loss = 9999
     epoch_best_val_loss = 0

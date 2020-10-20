@@ -11,6 +11,7 @@ if __name__ == '__main__':
     ap.add_argument('--batch_size', type=int, default=32)
     ap.add_argument('--val_epoch', type=int, default=5)
     ap.add_argument('--lr', type=float, default=0.001)
+    ap.add_argument('--step_size', type=int, default=30)
     ap.add_argument('--val_split', type=float, default=0.2)
     ap.add_argument('--epochs', type=int, default=200)
     ap.add_argument('-n', '--num_class', type=int, default=381)

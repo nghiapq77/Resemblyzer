@@ -204,9 +204,11 @@ def preprocess_voxceleb2(datasets_root: Path,
                              out_dir, "m4a", skip_existing, logger)
 
 
-def preprocess_clv(datasets_root: Path, out_dir: Path, skip_existing=False):
+def preprocess_clv(dataset_name,
+                   datasets_root: Path,
+                   out_dir: Path,
+                   skip_existing=False):
     # Initialize the preprocessing
-    dataset_name = "clv"
     dataset_root, logger = _init_preprocess_dataset(dataset_name,
                                                     datasets_root, out_dir)
     if not dataset_root:
@@ -215,6 +217,5 @@ def preprocess_clv(datasets_root: Path, out_dir: Path, skip_existing=False):
     # Get the speaker directories
     # Preprocess all speakers
     speaker_dirs = list(dataset_root.glob("*"))
-    # print(speaker_dirs)
     _preprocess_speaker_dirs(speaker_dirs, dataset_name, datasets_root,
                              out_dir, "flac", skip_existing, logger)

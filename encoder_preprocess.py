@@ -71,5 +71,7 @@ if __name__ == "__main__":
     }
     args = vars(args)
     for dataset in args.pop("datasets"):
-        print("Preprocessing %s" % dataset)
-        preprocess_func[dataset](**args)
+        preprocess_clv(dataset, args["datasets_root"], args["out_dir"])
+    # for dataset in args.pop("datasets"):
+        # print("Preprocessing %s" % dataset)
+        # preprocess_func[dataset](**args)
