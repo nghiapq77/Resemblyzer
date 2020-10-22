@@ -2,7 +2,6 @@ import numpy as np
 import pickle
 import os
 from pathlib import Path
-from datetime import datetime
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
@@ -16,6 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 
 from resemblyzer.hparams import model_embedding_size
+from utils.logger import Logger
 
 
 def load_data(from_path=None, ckpt_path=None, data_path=None, save_path=None):
@@ -78,27 +78,6 @@ def scale_data(X_train, X_test=None, method='standard'):
     else:
         X_test_std = sc.transform(X_test)
     return X_train_std, X_test_std
-
-
-class Logger:
-    """
-    Logger for classifier
-    """
-    def __init__(self, root):
-        self.text_file = open(Path(root, "log.txt"), "w")
-
-        start_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
-        self.write_line(f"Creating log on {start_time}")
-        self.write_line("=".center(100, '='))
-
-    def write_line(self, line):
-        self.text_file.write("%s\n" % line)
-
-    def finalize(self):
-        self.write_line("=".center(100, '='))
-        end_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
-        self.write_line(f"Finished on {end_time}")
-        self.text_file.close()
 
 
 class SVM():
@@ -325,6 +304,7 @@ def train_mlp(args):
                 best_val_acc = val_acc
                 epoch_best_val_acc = epoch
                 torch.save(model.state_dict(), os.path.join(save_path, 'mlp_best_val_acc.pt'))
+    torch.save(model.state_dict(), os.path.join(save_path, f'mlp_e{epoch}.pt'))
     print(f'Best val loss {best_val_loss} at epoch {epoch_best_val_loss}')
     logger.write_line(f'Best val loss {best_val_loss} at epoch {epoch_best_val_loss}')
     print(f'Best val acc {best_val_acc} at epoch {epoch_best_val_acc}')

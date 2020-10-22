@@ -16,9 +16,8 @@ from resemblyzer.hparams import (
     learning_rate_init, speakers_per_batch, utterances_per_speaker
 )
 from resemblyzer import audio
-from resemblyzer.visualizations import Visualizations
 from resemblyzer.data_objects import SpeakerVerificationDataLoader, SpeakerVerificationDataset
-from utils.profiler import Profiler
+from utils.logger import Profiler, Logger
 # from resemblyzer.transformer import TransformerEncoder
 
 
@@ -300,6 +299,8 @@ class VoiceEncoder(nn.Module):
 def train(run_id: str, clean_data_root: Path, models_dir: Path,
           umap_every: int, save_every: int, backup_every: int, vis_every: int,
           force_restart: bool, visdom_server: str, no_visdom: bool):
+    from resemblyzer.visualizations import Visualizations
+
     def sync(device: torch.device):
         # For correct profiling (cuda operations are async)
         if device.type == "cuda":
@@ -361,6 +362,7 @@ def train(run_id: str, clean_data_root: Path, models_dir: Path,
 
     # Training loop
     profiler = Profiler(summarize_every=10, disabled=False)
+    logger = Logger(models_dir)
     for step, speaker_batch in enumerate(loader, init_step):
         profiler.tick("Blocking, waiting for batch (threaded)")
 
@@ -377,6 +379,7 @@ def train(run_id: str, clean_data_root: Path, models_dir: Path,
         loss, eer = model.loss(embeds_loss)
         sync(loss_device)
         profiler.tick("Loss")
+        logger.write_line(f'Step {step},\tLoss {loss},\tEER {eer}')
 
         # Backward pass
         model.zero_grad()

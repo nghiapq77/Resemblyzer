@@ -9,8 +9,11 @@ from resemblyzer import Predictor
 
 def predict_folder(data_path='../data/clv', exp_dir='exp/combine', num_class=381):
     class_path = Path(exp_dir, 'classes.npy')
-    clf_ckpt_path = Path(exp_dir, 'mlp/mlp_best_val_loss.pt')
+    # clf_ckpt_path = Path(exp_dir, 'mlp/mlp_best_val_loss.pt')
+    # clf_ckpt_path = Path(exp_dir, 'mlp/mlp_best_val_acc.pt')
+    clf_ckpt_path = Path(exp_dir, 'mlp/mlp_e200.pt')
     enc_ckpt_path = 'ckpt/pretrained.pt'
+    # enc_ckpt_path = 'ckpt/encoder_mdl_ls_cv_vctk_vc12_bak_1000100.pt'
     predictor = Predictor(clf_ckpt_path, enc_ckpt_path, num_class=num_class, verbose=True)
     classes = np.load(class_path)
     correct = 0

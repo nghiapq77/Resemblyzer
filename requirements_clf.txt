@@ -4,3 +4,4 @@ webrtcvad>=2.0.10
 torch>=1.0.1
 scipy>=1.2.1
 typing
+tqdm

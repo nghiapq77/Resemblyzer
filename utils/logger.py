@@ -1,6 +1,29 @@
+from pathlib import Path
 from time import perf_counter as timer
+from datetime import datetime
 from collections import OrderedDict
 import numpy as np
+
+
+class Logger:
+    """
+    Logger for classifier
+    """
+    def __init__(self, root):
+        self.text_file = open(Path(root, "log.txt"), "w")
+
+        start_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
+        self.write_line(f"Creating log on {start_time}")
+        self.write_line("=".center(100, '='))
+
+    def write_line(self, line):
+        self.text_file.write("%s\n" % line)
+
+    def finalize(self):
+        self.write_line("=".center(100, '='))
+        end_time = str(datetime.now().strftime("%A %d %B %Y at %H:%M"))
+        self.write_line(f"Finished on {end_time}")
+        self.text_file.close()
 
 
 class Profiler:

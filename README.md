@@ -2,6 +2,13 @@ Resemblyzer allows you to derive a **high-level representation of a voice** thro
 
 N.B.: this repo holds 100mb of audio data for demonstration purpose. To get [the package](https://pypi.org/project/Resemblyzer/) alone, run `pip install resemblyzer` (python 3.5+ is required).
 
+## Requirements
+```bash
+conda create -n resemblyzer python=3.7
+conda activate resemblyzer
+pip install -r requirements_clf.txt
+```
+
 ## Training and Testing
 **Encoder**:
 ```bash
